@@ -12,11 +12,10 @@ def policy_network(obs, params):
 def value_network(obs, params):
     return jnp.dot(obs, params['w']) + params['b']
 
-# Define the loss functions
 @jit
 def policy_loss(params, obs, action, advantage):
     probs = policy_network(obs, params)
-    log_prob = jnp.log(probs[action[0]])  # Index by first action element assuming it corresponds to the decision type
+    log_prob = jnp.log(probs[action[0]])
     return -log_prob * advantage
 
 @jit
@@ -24,20 +23,17 @@ def value_loss(params, obs, return_):
     value_pred = value_network(obs, params)
     return jnp.square(value_pred - return_)[0]
 
-# Define the update step
 @jit
 def update_step(params, grads, learning_rate=0.01):
     params['w'] -= learning_rate * grads['w']
     params['b'] -= learning_rate * grads['b']
     return params
 
-# Create the Figgie environment
 env = FiggieEnv(num_players=4)
 
-# Initialize the policy and value network parameters
 key = random.PRNGKey(0)
-num_actions = 4  # Define how many action types are available
-action_suit_range = 4  # Define the range for suits
+num_actions = 4
+action_suit_range = 4
 params = {
     'w': random.normal(key, (4, num_actions * action_suit_range)),
     'b': random.normal(key, (num_actions * action_suit_range,))
