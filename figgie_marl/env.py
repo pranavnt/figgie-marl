@@ -16,7 +16,11 @@ class FiggieEnv(gym.Env):
         self.goal_suit = None
         self.goal_suit_cards = None
 
-        self.action_space = gym.spaces.Discrete(4)  # buy, bid, offer, pass
+        self.action_space = gym.spaces.Tuple([
+            gym.spaces.Discrete(4),  # buy, bid, offer, pass
+            gym.spaces.Discrete(4),  # suit index
+            gym.spaces.Box(low=0, high=350, shape=(1,), dtype=np.int32)  # amount
+        ])
 
         self.observation_space = gym.spaces.Dict({
             'player_id': gym.spaces.Discrete(num_players),
@@ -55,7 +59,7 @@ class FiggieEnv(gym.Env):
         self._deal_cards()
 
         self.current_player = 0
-        self.trading_time = 240  # 4 minutes in seconds
+        self.trading_time = 480  # 4 minutes in seconds
 
         return self._get_obs()
 
@@ -74,58 +78,71 @@ class FiggieEnv(gym.Env):
             suit_index = self.suits.index(suit)
             self.player_cards[player][suit_index] += 1
 
-    def step(self, action: int) -> Tuple[Dict[str, np.ndarray], int, bool, Dict]:
-        if action == 0:  # buy
-            self._process_buy_action()
-        elif action == 1:  # bid
-            self._process_bid_action()
-        elif action == 2:  # offer
-            self._process_offer_action()
-        # else: pass
+    def step(self, actions: Tuple[Tuple[int, int, int], ...]) -> Tuple[Dict[str, np.ndarray], List[int], bool, Dict]:
+        for player_id, action in enumerate(actions):
+            action_type, suit_index, amount = action
+            if action_type == 0:  # buy
+                if self.offers[suit_index] <= amount and amount <= self.player_chips[player_id]:
+                    self.player_cards[player_id][suit_index] += 1
+                    self.player_chips[player_id] -= amount.item()
+                    self._add_completed_order(suit_index, amount, 1)
+                    self.offers[suit_index] = 0
+            elif action_type == 1:  # bid
+                self.bids[suit_index] = max(self.bids[suit_index], amount)
+            elif action_type == 2:  # offer
+                if self.player_cards[player_id][suit_index] > 0:
+                    self.offers[suit_index] = min(self.offers[suit_index], amount)
 
         self._process_completed_orders()
 
         self.trading_time -= 1
         done = (self.trading_time <= 0)
 
-        if not done:
-            self.current_player = (self.current_player + 1) % self.num_players
-
         obs = self._get_obs()
-        reward = self._calculate_reward() if done else 0
+        rewards = [0] * self.num_players if not done else self._calculate_final_rewards()
         info = {}
 
-        return obs, reward, done, info
-
-    def _process_buy_action(self):
-        # Implement buy action logic
-        pass
-
-    def _process_bid_action(self):
-        # Implement bid action logic
-        pass
-
-    def _process_offer_action(self):
-        # Implement offer action logic
-        pass
+        return obs, rewards, done, info
 
     def _process_completed_orders(self):
-        # Implement completed order processing logic
-        pass
+        mask = self.bids > 0
+        matched_suits = np.where(mask & (self.bids <= self.offers))[0]
 
-    def _calculate_reward(self) -> int:
-        rewards = np.zeros(self.num_players, dtype=np.int32)
+        for suit_index in matched_suits:
+            bid_player = np.where(self.bids == self.bids[suit_index])[0][0]
+            offer_player = np.where(self.offers == self.offers[suit_index])[0][0]
+
+            self.player_cards[bid_player][suit_index] += 1
+            self.player_cards[offer_player][suit_index] -= 1
+
+            self.player_chips[bid_player] -= self.bids[suit_index]
+            self.player_chips[offer_player] += self.bids[suit_index]
+
+            self._add_completed_order(suit_index, self.bids[suit_index], 1)
+
+            self.bids[suit_index] = 0
+            self.offers[suit_index] = 0
+
+    def _add_completed_order(self, suit_index, price, quantity):
+        self.completed_orders = np.roll(self.completed_orders, -1, axis=0)
+        self.completed_orders[-1, 0] = suit_index
+        self.completed_orders[-1, 1] = price
+        self.completed_orders[-1, 2] = quantity
+
+    def _calculate_final_rewards(self):
+        rewards = [0] * self.num_players
         goal_suit_index = self.suits.index(self.goal_suit)
 
-        for player in range(self.num_players):
-            rewards[player] = self.player_cards[player][goal_suit_index] * 10
+        for player_id in range(self.num_players):
+            rewards[player_id] = self.player_cards[player_id][goal_suit_index] * 10
 
         max_goal_suit_cards = np.max(self.player_cards[:, goal_suit_index])
         winners = np.where(self.player_cards[:, goal_suit_index] == max_goal_suit_cards)[0]
         pot_bonus = (200 - self.goal_suit_cards * 10) // len(winners)
-        rewards[winners] += pot_bonus
+        for winner in winners:
+            rewards[winner] += pot_bonus
 
-        return rewards[self.current_player]
+        return rewards
 
     def render(self, mode='human'):
         if mode == 'human':
