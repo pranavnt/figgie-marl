@@ -23,29 +23,38 @@ class FiggieEnv(gym.Env):
             gym.spaces.Box(low=0, high=350, shape=(1,), dtype=np.int32)  # amount
         ])
 
-        self.observation_space = gym.spaces.Dict({
-            'player_id': gym.spaces.Discrete(num_players),
-            'player_cards': gym.spaces.Box(low=0, high=12, shape=(4,), dtype=np.int32),
-            'player_chips': gym.spaces.Box(low=0, high=1000, shape=(1,), dtype=np.int32),
-            'opponent_card_counts': gym.spaces.Box(low=0, high=12, shape=(num_players-1, 4), dtype=np.int32),
-            'bids': gym.spaces.Box(low=0, high=350, shape=(4,), dtype=np.int32),
-            'offers': gym.spaces.Box(low=0, high=350, shape=(4,), dtype=np.int32),
-            'completed_orders': gym.spaces.Box(low=0, high=350, shape=(20, 3), dtype=np.int32),
-        })
+        self.obs_size = 1 + self.num_suits + 1 + (self.num_players - 1) * self.num_suits + self.num_suits * 2 + 20 * 3
+        self.observation_space = gym.spaces.Box(low=0, high=350, shape=(self.num_players, self.obs_size), dtype=np.int32)
 
-    def _get_obs(self) -> Dict[str, np.ndarray]:
-        obs = {
-            'player_id': self.current_player,
-        'player_cards': self.player_cards[self.current_player].reshape(-1),  # Change this line
-        'player_chips': self.player_chips[self.current_player],
-        'opponent_card_counts': np.delete(self.player_cards, self.current_player, axis=0),
-        'bids': self.bids,
-        'offers': self.offers,
-        'completed_orders': self.completed_orders
-        }
-        return obs
+    def _get_obs(self) -> jnp.ndarray:
+        obs = np.zeros((self.num_players, self.obs_size), dtype=np.int32)
 
-    def reset(self) -> Dict[str, np.ndarray]:
+        for player_id in range(self.num_players):
+            offset = 0
+            obs[player_id, offset] = player_id
+            offset += 1
+
+            obs[player_id, offset:offset+self.num_suits] = self.player_cards[player_id]
+            offset += self.num_suits
+
+            obs[player_id, offset] = self.player_chips[player_id]
+            offset += 1
+
+            opponent_card_counts = np.delete(self.player_cards, player_id, axis=0).flatten()
+            obs[player_id, offset:offset+len(opponent_card_counts)] = opponent_card_counts
+            offset += len(opponent_card_counts)
+
+            obs[player_id, offset:offset+self.num_suits] = self.bids
+            offset += self.num_suits
+
+            obs[player_id, offset:offset+self.num_suits] = self.offers
+            offset += self.num_suits
+
+            obs[player_id, offset:] = self.completed_orders.flatten()
+
+        return jnp.array(obs)
+
+    def reset(self) -> jnp.ndarray:
         self.player_cards = np.zeros((self.num_players, self.num_suits), dtype=np.int32)
         self.player_chips = np.full((self.num_players,), 300, dtype=np.int32)  # $350 - $50 ante
         self.bids = np.zeros(self.num_suits, dtype=np.int32)
@@ -79,13 +88,13 @@ class FiggieEnv(gym.Env):
             suit_index = self.suits.index(suit)
             self.player_cards[player][suit_index] += 1
 
-    def step(self, actions: Tuple[Tuple[int, int, int], ...]) -> Tuple[Dict[str, np.ndarray], List[int], bool, Dict]:
+    def step(self, actions: Tuple[Tuple[int, int, int], ...]) -> Tuple[jnp.ndarray, List[int], bool, Dict]:
         for player_id, action in enumerate(actions):
             action_type, suit_index, amount = action
             if action_type == 0:  # buy
                 if self.offers[suit_index] <= amount and amount <= self.player_chips[player_id]:
-                    self.player_cards = self.player_cards.at[player_id, suit_index].add(1)
-                    self.player_chips = self.player_chips.at[player_id].subtract(amount)
+                    self.player_cards[player_id][suit_index] += 1
+                    self.player_chips[player_id] -= amount
                     seller_id = np.where(self.offers == self.offers[suit_index])[0][0]
                     self._add_completed_order(player_id, seller_id, amount)
                     self.offers[suit_index] = 0
@@ -122,10 +131,10 @@ class FiggieEnv(gym.Env):
             offer_player = np.where(self.offers == self.offers[suit_index])[0][0]
 
             self.player_cards[bid_player][suit_index] += 1
-            self.player_cards = self.player_cards.at[offer_player, suit_index].subtract(1)
+            self.player_cards[offer_player][suit_index] -= 1
 
-            self.player_chips = self.player_chips.at[bid_player].subtract(self.bids[suit_index])
-            self.player_chips = self.player_chips.at[offer_player].add(self.bids[suit_index])
+            self.player_chips[bid_player] -= self.bids[suit_index]
+            self.player_chips[offer_player] += self.bids[suit_index]
 
             self._add_completed_order(bid_player, offer_player, self.bids[suit_index])
 
@@ -153,12 +162,7 @@ class FiggieEnv(gym.Env):
 
     def render(self, mode='human'):
         if mode == 'human':
-            print(f"Player: {self.current_player}")
-            print(f"Player Chips: {self.player_chips}")
-            print(f"Player Cards: {self.player_cards}")
-            print(f"Bids: {self.bids}")
-            print(f"Offers: {self.offers}")
-            print(f"Completed Orders: {self.completed_orders}")
+            pass
         else:
             super(FiggieEnv, self).render(mode=mode)
 

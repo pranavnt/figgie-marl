@@ -1,5 +1,4 @@
 import jax
-import numpy as np
 import jax.numpy as jnp
 import flax.linen as nn
 from env import FiggieEnv
@@ -11,38 +10,25 @@ class Agent(nn.Module):
 
     @nn.compact
     def __call__(self, obs):
-        player_cards = obs['player_cards']
-        opponent_card_counts = obs['opponent_card_counts']
-        bids = obs['bids']
-        offers = obs['offers']
-        completed_orders = obs['completed_orders']
-
-        opponent_card_counts_flat = jnp.ravel(opponent_card_counts)
-        opponent_card_dist = nn.Dense(self.num_suits * (self.num_players - 1))(opponent_card_counts_flat)
-        opponent_card_dist = jnp.reshape(opponent_card_dist, (self.num_players - 1, self.num_suits))
+        # Predict opponent card distribution
+        opponent_card_dist = nn.Dense(self.hidden_dim)(obs)
+        opponent_card_dist = nn.relu(opponent_card_dist)
+        opponent_card_dist = nn.Dense(self.num_suits * (self.num_players - 1))(opponent_card_dist)
         opponent_card_dist = nn.softmax(opponent_card_dist, axis=-1)
+        opponent_card_dist = jnp.reshape(opponent_card_dist, (self.num_players - 1, self.num_suits))
 
-        opponent_actions = nn.Dense(4 * (self.num_players - 1))(jnp.ravel(opponent_card_counts))
-        opponent_actions = jnp.reshape(opponent_actions, (self.num_players - 1, 4))
+        # Predict opponent actions
+        opponent_actions = nn.Dense(self.hidden_dim)(obs)
+        opponent_actions = nn.relu(opponent_actions)
+        opponent_actions = nn.Dense(4 * (self.num_players - 1))(opponent_actions)
         opponent_actions = nn.softmax(opponent_actions, axis=-1)
+        opponent_actions = jnp.reshape(opponent_actions, (self.num_players - 1, 4))
 
-        print("player_cards: ", player_cards)
-        print("opponent_card_dist: ", opponent_card_dist)
-        print("opponent_actions: ", opponent_actions)
-        print("bids: ", bids)
-        print("offers: ", offers)
-        print("completed_orders: ", completed_orders)
+        # Concatenate features for the final policy network
+        features = jnp.concatenate([obs, jnp.ravel(opponent_card_dist), jnp.ravel(opponent_actions)])
 
-        features = jnp.concatenate([
-            player_cards,
-            jnp.ravel(opponent_card_dist),
-            jnp.ravel(opponent_actions),
-            bids,
-            offers,
-            jnp.ravel(completed_orders)
-        ])
-
-        actor = nn.Dense(self.hidden_dim, kernel_init=nn.initializers.zeros)(features)
+        # Policy network
+        actor = nn.Dense(self.hidden_dim)(features)
         actor = nn.relu(actor)
         actor = nn.Dense(self.hidden_dim)(actor)
         actor = nn.relu(actor)
@@ -55,6 +41,7 @@ class Agent(nn.Module):
         amount_mu = nn.Dense(1)(actor)
         amount_sigma = nn.softplus(nn.Dense(1)(actor)) + 1e-6
 
+        # Value network
         critic = nn.Dense(self.hidden_dim)(features)
         critic = nn.relu(critic)
         critic = nn.Dense(self.hidden_dim)(critic)
@@ -74,6 +61,7 @@ class Agent(nn.Module):
 
         return jnp.array([action_type, suit, amount[0]])
 
+
 if __name__ == "__main__":
     num_players = 4
     num_suits = 4
@@ -87,7 +75,7 @@ if __name__ == "__main__":
     for _ in range(num_players):
         agent = Agent(num_players=num_players, num_suits=num_suits, hidden_dim=hidden_dim)
         rng_key, init_key = jax.random.split(rng_key)
-        params = agent.init(init_key, env.observation_space.sample())
+        params = agent.init(init_key, env.observation_space.sample()[0])
         agents.append(agent)
         agent_params.append(params)
 
@@ -95,17 +83,11 @@ if __name__ == "__main__":
     obs = env.reset()
 
     done = False
+    round_num = 0
     while not done:
         actions = []
         for i in range(num_players):
-            player_obs = {}
-            for k, v in obs.items():
-                if k == 'opponent_card_counts':
-                    player_obs[k] = v
-                elif isinstance(v, np.ndarray) and v.ndim == 1 and len(v) == num_players:
-                    player_obs[k] = v[i]
-                else:
-                    player_obs[k] = v
+            player_obs = obs[i]
 
             rng_key, subkey = jax.random.split(rng_key)
             action = agents[i].act(agent_params[i], player_obs, subkey)
@@ -115,7 +97,9 @@ if __name__ == "__main__":
         obs, rewards, done, info = env.step(actions)
 
         env.render()
-        print(f"Rewards: {rewards}")
+        # print(f"Rewards: {rewards}")
+        print(round_num)
+        round_num += 1
 
     print("Game over!")
     print(f"Final rewards: {rewards}")
