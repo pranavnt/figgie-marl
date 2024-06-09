@@ -1,6 +1,7 @@
 import gymnasium as gym
 import numpy as np
 from typing import Dict, List, Tuple
+import jax.numpy as jnp
 
 class FiggieEnv(gym.Env):
     metadata = {'render.modes': ['human']}
@@ -29,7 +30,7 @@ class FiggieEnv(gym.Env):
             'opponent_card_counts': gym.spaces.Box(low=0, high=12, shape=(num_players-1, 4), dtype=np.int32),
             'bids': gym.spaces.Box(low=0, high=350, shape=(4,), dtype=np.int32),
             'offers': gym.spaces.Box(low=0, high=350, shape=(4,), dtype=np.int32),
-            'completed_orders': gym.spaces.Box(low=0, high=350, shape=(20, 3), dtype=np.int32),  # suit, price, quantity
+            'completed_orders': gym.spaces.Box(low=0, high=350, shape=(20, 3), dtype=np.int32),
         })
 
     def _get_obs(self) -> Dict[str, np.ndarray]:
@@ -37,10 +38,10 @@ class FiggieEnv(gym.Env):
             'player_id': self.current_player,
             'player_cards': self.player_cards[self.current_player],
             'player_chips': self.player_chips[self.current_player],
-            'opponent_card_counts': np.delete(self.player_cards, self.current_player, axis=0),
+            'opponent_card_counts': jnp.delete(self.player_cards, self.current_player, axis=0),
             'bids': self.bids,
             'offers': self.offers,
-            'completed_orders': self.completed_orders,
+            'completed_orders': self.completed_orders
         }
         return obs
 
@@ -49,7 +50,7 @@ class FiggieEnv(gym.Env):
         self.player_chips = np.full((self.num_players,), 300, dtype=np.int32)  # $350 - $50 ante
         self.bids = np.zeros(self.num_suits, dtype=np.int32)
         self.offers = np.zeros(self.num_suits, dtype=np.int32)
-        self.completed_orders = np.zeros((20, 3), dtype=np.int32)
+        self.completed_orders = jnp.zeros((20, 3), dtype=jnp.int32)
 
         self.deck = self._create_deck()
         self.common_suit = [suit for suit, count in self.deck if count == 12][0]
@@ -85,7 +86,8 @@ class FiggieEnv(gym.Env):
                 if self.offers[suit_index] <= amount and amount <= self.player_chips[player_id]:
                     self.player_cards[player_id][suit_index] += 1
                     self.player_chips[player_id] -= amount.item()
-                    self._add_completed_order(suit_index, amount, 1)
+                    seller_id = np.where(self.offers == self.offers[suit_index])[0][0]
+                    self._add_completed_order(player_id, seller_id, amount)
                     self.offers[suit_index] = 0
             elif action_type == 1:  # bid
                 self.bids[suit_index] = max(self.bids[suit_index], amount)
@@ -123,11 +125,9 @@ class FiggieEnv(gym.Env):
             self.bids[suit_index] = 0
             self.offers[suit_index] = 0
 
-    def _add_completed_order(self, suit_index, price, quantity):
-        self.completed_orders = np.roll(self.completed_orders, -1, axis=0)
-        self.completed_orders[-1, 0] = suit_index
-        self.completed_orders[-1, 1] = price
-        self.completed_orders[-1, 2] = quantity
+    def _add_completed_order(self, player_id_buy, player_id_sell, amount):
+        self.completed_orders = jnp.roll(self.completed_orders, -1, axis=0)
+        self.completed_orders = self.completed_orders.at[-1].set(jnp.array([player_id_buy, player_id_sell, amount]))
 
     def _calculate_final_rewards(self):
         rewards = [0] * self.num_players

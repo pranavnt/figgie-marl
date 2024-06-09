@@ -1,129 +1,105 @@
-# figgie_marl/agent.py
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
-import optax
-from typing import Tuple
-from figgie_marl.utils import ReplayBuffer, PPOParams
+from env import FiggieEnv
 
-class PolicyNetwork(nn.Module):
-    action_dim: int
-
-    @nn.compact
-    def __call__(self, x):
-        x = nn.Dense(64)(x)
-        x = nn.relu(x)
-        x = nn.Dense(64)(x)
-        x = nn.relu(x)
-        x = nn.Dense(self.action_dim)(x)
-        return nn.log_softmax(x)
-
-class ValueNetwork(nn.Module):
-    @nn.compact
-    def __call__(self, x):
-        x = nn.Dense(64)(x)
-        x = nn.relu(x)
-        x = nn.Dense(64)(x)
-        x = nn.relu(x)
-        x = nn.Dense(1)(x)
-        return x
-
-class SuitDistributionPredictor(nn.Module):
+class Agent(nn.Module):
     num_players: int
     num_suits: int
+    hidden_dim: int
 
     @nn.compact
-    def __call__(self, x):
-        x = nn.Dense(64)(x)
-        x = nn.relu(x)
-        x = nn.Dense(64)(x)
-        x = nn.relu(x)
-        x = nn.Dense(self.num_players * self.num_suits)(x)
-        return nn.softmax(x.reshape((self.num_players, self.num_suits)), axis=-1)
+    def __call__(self, obs):
+        player_cards = obs['player_cards']
+        opponent_card_counts = obs['opponent_card_counts']
+        bids = obs['bids']
+        offers = obs['offers']
+        completed_orders = obs['completed_orders']
 
-class Agent:
-    def __init__(self, id: int, obs_dim: int, action_dim: int, num_players: int, num_suits: int, lr: float, gamma: float, lambda_: float) -> None:
-        self.id = id
-        self.policy_network = PolicyNetwork(action_dim)
-        self.value_network = ValueNetwork()
-        self.suit_distribution_predictor = SuitDistributionPredictor(num_players, num_suits)
-        self.policy_optimizer = optax.adam(lr)
-        self.value_optimizer = optax.adam(lr)
-        self.suit_distribution_optimizer = optax.adam(lr)
-        self.obs_dim = obs_dim
-        self.action_dim = action_dim
-        self.gamma = gamma
-        self.lambda_ = lambda_
+        opponent_card_counts_flat = jnp.ravel(opponent_card_counts)
+        opponent_card_dist = nn.Dense(self.num_suits * (self.num_players - 1))(opponent_card_counts_flat)
+        opponent_card_dist = jnp.reshape(opponent_card_dist, (self.num_players - 1, self.num_suits))
+        opponent_card_dist = nn.softmax(opponent_card_dist, axis=-1)
 
-    def act(self, obs: jnp.array, rng_key: jnp.array) -> Tuple[jnp.array, jnp.array]:
-        logits = self.policy_network.apply(self.policy_params, obs)
-        action = jax.random.categorical(rng_key, logits)
-        logp = jnp.take_along_axis(logits, jnp.expand_dims(action, axis=-1), axis=-1)
-        return action, logp
+        opponent_actions = nn.Dense(4 * (self.num_players - 1))(jnp.ravel(opponent_card_counts))
+        opponent_actions = jnp.reshape(opponent_actions, (self.num_players - 1, 4))
+        opponent_actions = nn.softmax(opponent_actions, axis=-1)
 
-    def evaluate(self, obs: jnp.array) -> Tuple[jnp.array, jnp.array]:
-        logits = self.policy_network.apply(self.policy_params, obs)
-        value = self.value_network.apply(self.value_params, obs)
-        return logits, value
+        goal_suit_pred = nn.Dense(self.num_suits)(jnp.concatenate([player_cards, jnp.ravel(opponent_card_counts)]))
+        goal_suit_pred = nn.softmax(goal_suit_pred)
 
-    def ppo_update(self, replay_buffer: ReplayBuffer, ppo_params: PPOParams) -> None:
-        obs_buf, act_buf, rew_buf, done_buf, logp_buf, val_buf = replay_buffer.get()
+        features = jnp.concatenate([
+          player_cards,
+          jnp.ravel(opponent_card_dist),
+          jnp.ravel(opponent_actions),
+          goal_suit_pred,
+          bids,
+            offers,
+            jnp.ravel(completed_orders)
+        ])
 
-        # Calculate advantages
-        adv_buf = rew_buf + (1 - done_buf) * self.gamma * val_buf[1:] - val_buf[:-1]
-        adv_buf = (adv_buf - adv_buf.mean()) / (adv_buf.std() + 1e-8)
+        actor = nn.Dense(self.hidden_dim, kernel_init=nn.initializers.zeros)(features)
+        actor = nn.relu(actor)
+        actor = nn.Dense(self.hidden_dim)(actor)
+        actor = nn.relu(actor)
+        action_logits = nn.Dense(4)(actor)
+        action_probs = nn.softmax(action_logits)
 
-        # Flatten the batch
-        obs_flat = obs_buf.reshape((-1,) + obs_buf.shape[2:])
-        act_flat = act_buf.reshape((-1,) + act_buf.shape[2:])
-        logp_flat = logp_buf.reshape((-1,) + logp_buf.shape[2:])
-        adv_flat = adv_buf.reshape(-1)
-        ret_flat = rew_buf.reshape(-1)
+        critic = nn.Dense(self.hidden_dim)(features)
+        critic = nn.relu(critic)
+        critic = nn.Dense(self.hidden_dim)(critic)
+        critic = nn.relu(critic)
+        value = nn.Dense(1)(critic)
 
-        # Update the networks
-        for _ in range(ppo_params.num_epochs):
-            # Shuffle the indices
-            indices = jnp.arange(obs_flat.shape[0])
-            indices = jax.random.permutation(jax.random.PRNGKey(0), indices)
+        return action_probs, value, opponent_card_dist, opponent_actions, goal_suit_pred
 
-            # Iterate over mini-batches
-            for start in range(0, obs_flat.shape[0], ppo_params.batch_size):
-                end = start + ppo_params.batch_size
-                batch_indices = indices[start:end]
+    def act(self, params, obs, rng_key):
+        action_probs, _, _, _, _ = self.apply(params, obs)
+        action = jax.random.categorical(rng_key, jnp.log(action_probs))
+        return action
 
-                # Policy loss
-                logits, _ = self.evaluate(obs_flat[batch_indices])
-                ratio = jnp.exp(logits - logp_flat[batch_indices])
-                clip_adv = jnp.clip(ratio, 1 - ppo_params.clip_ratio, 1 + ppo_params.clip_ratio) * adv_flat[batch_indices]
-                policy_loss = -(jnp.minimum(ratio * adv_flat[batch_indices], clip_adv)).mean()
+if __name__ == "__main__":
+    num_players = 4
+    num_suits = 4
+    hidden_dim = 64
 
-                # Value loss
-                _, v = self.evaluate(obs_flat[batch_indices])
-                v_clip = val_buf[batch_indices] + (v - val_buf[batch_indices]).clip(-ppo_params.clip_ratio, ppo_params.clip_ratio)
-                v_loss1 = (ret_flat[batch_indices] - v) ** 2
-                v_loss2 = (ret_flat[batch_indices] - v_clip) ** 2
-                value_loss = 0.5 * jnp.maximum(v_loss1, v_loss2).mean()
+    env = FiggieEnv(num_players=num_players)
 
-                # Entropy bonus
-                dist = jax.nn.softmax(logits)
-                entropy = -(dist * jnp.log(dist + 1e-8)).sum(-1).mean()
+    rng_key = jax.random.PRNGKey(0)
+    agents = []
+    agent_params = []
+    for _ in range(num_players):
+        agent = Agent(num_players=num_players, num_suits=num_suits, hidden_dim=hidden_dim)
+        rng_key, init_key = jax.random.split(rng_key)
+        params = agent.init(init_key, {'player_cards': jnp.zeros((num_suits,)), 'opponent_card_counts': jnp.zeros((num_players-1, num_suits)), 'bids': jnp.zeros((num_suits,)), 'offers': jnp.zeros((num_suits,)), 'completed_orders': jnp.zeros((num_suits,))})
+        agents.append(agent)
+        agent_params.append(params)
 
-                # Combine losses
-                loss = policy_loss + ppo_params.value_coeff * value_loss - ppo_params.entropy_coeff * entropy
+   # Reset the environment
+    obs = env.reset()
 
-                # Update the parameters
-                policy_grads = jax.grad(loss, self.policy_params)
-                value_grads = jax.grad(loss, self.value_params)
-                self.policy_params = self.policy_optimizer.update(policy_grads, self.policy_params)
-                self.value_params = self.value_optimizer.update(value_grads, self.value_params)
+    done = False
+    while not done:
+        actions = []
+        for i in range(num_players):
+            player_obs = {}
+            for k, v in obs.items():
+                if isinstance(v, jnp.ndarray) and v.ndim > 1:
+                    player_obs[k] = v[i]
+                elif isinstance(v, jnp.ndarray) and v.ndim == 1 and len(v) == num_players:
+                    player_obs[k] = v[i]
+                else:
+                    player_obs[k] = v
 
-                # Update the suit distribution predictor
-                suit_distribution_loss = self._update_suit_distribution_predictor(obs_flat[batch_indices])
-                suit_distribution_grads = jax.grad(suit_distribution_loss, self.suit_distribution_params)
-                self.suit_distribution_params = self.suit_distribution_optimizer.update(suit_distribution_grads, self.suit_distribution_params)
+            rng_key, subkey = jax.random.split(rng_key)
+            action = agents[i].act(agent_params[i], player_obs, subkey)
+            actions.append(action)
 
-    def _update_suit_distribution_predictor(self, obs: jnp.array) -> jnp.array:
-        # Implement the loss function and update logic for the suit distribution predictor
-        # You can use the observed suit distributions from the game state as the target
-        # and calculate the cross-entropy loss between the predicted and target distributions
-        ...
+        actions = tuple(actions)
+        obs, rewards, done, info = env.step(actions)
+
+        env.render()
+        print(f"Rewards: {rewards}")
+
+    print("Game over!")
+    print(f"Final rewards: {rewards}")
