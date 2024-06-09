@@ -36,12 +36,12 @@ class FiggieEnv(gym.Env):
     def _get_obs(self) -> Dict[str, np.ndarray]:
         obs = {
             'player_id': self.current_player,
-            'player_cards': self.player_cards[self.current_player],
-            'player_chips': self.player_chips[self.current_player],
-            'opponent_card_counts': jnp.delete(self.player_cards, self.current_player, axis=0),
-            'bids': self.bids,
-            'offers': self.offers,
-            'completed_orders': self.completed_orders
+        'player_cards': self.player_cards[self.current_player].reshape(-1),  # Change this line
+        'player_chips': self.player_chips[self.current_player],
+        'opponent_card_counts': np.delete(self.player_cards, self.current_player, axis=0),
+        'bids': self.bids,
+        'offers': self.offers,
+        'completed_orders': self.completed_orders
         }
         return obs
 
@@ -50,7 +50,7 @@ class FiggieEnv(gym.Env):
         self.player_chips = np.full((self.num_players,), 300, dtype=np.int32)  # $350 - $50 ante
         self.bids = np.zeros(self.num_suits, dtype=np.int32)
         self.offers = np.zeros(self.num_suits, dtype=np.int32)
-        self.completed_orders = jnp.zeros((20, 3), dtype=jnp.int32)
+        self.completed_orders = np.zeros((20, 3), dtype=np.int32)
 
         self.deck = self._create_deck()
         self.common_suit = [suit for suit, count in self.deck if count == 12][0]
@@ -84,8 +84,8 @@ class FiggieEnv(gym.Env):
             action_type, suit_index, amount = action
             if action_type == 0:  # buy
                 if self.offers[suit_index] <= amount and amount <= self.player_chips[player_id]:
-                    self.player_cards[player_id][suit_index] += 1
-                    self.player_chips[player_id] -= amount.item()
+                    self.player_cards = self.player_cards.at[player_id, suit_index].add(1)
+                    self.player_chips = self.player_chips.at[player_id].subtract(amount)
                     seller_id = np.where(self.offers == self.offers[suit_index])[0][0]
                     self._add_completed_order(player_id, seller_id, amount)
                     self.offers[suit_index] = 0
@@ -100,9 +100,16 @@ class FiggieEnv(gym.Env):
         self.trading_time -= 1
         done = (self.trading_time <= 0)
 
-        obs = self._get_obs()
-        rewards = [0] * self.num_players if not done else self._calculate_final_rewards()
-        info = {}
+        if done:
+            obs = self._get_obs()
+            rewards = self._calculate_final_rewards()
+            info = {}
+        else:
+            obs = self._get_obs()
+            rewards = [0] * self.num_players
+            info = {}
+
+        self.current_player = (self.current_player + 1) % self.num_players
 
         return obs, rewards, done, info
 
@@ -115,19 +122,19 @@ class FiggieEnv(gym.Env):
             offer_player = np.where(self.offers == self.offers[suit_index])[0][0]
 
             self.player_cards[bid_player][suit_index] += 1
-            self.player_cards[offer_player][suit_index] -= 1
+            self.player_cards = self.player_cards.at[offer_player, suit_index].subtract(1)
 
-            self.player_chips[bid_player] -= self.bids[suit_index]
-            self.player_chips[offer_player] += self.bids[suit_index]
+            self.player_chips = self.player_chips.at[bid_player].subtract(self.bids[suit_index])
+            self.player_chips = self.player_chips.at[offer_player].add(self.bids[suit_index])
 
-            self._add_completed_order(suit_index, self.bids[suit_index], 1)
+            self._add_completed_order(bid_player, offer_player, self.bids[suit_index])
 
             self.bids[suit_index] = 0
             self.offers[suit_index] = 0
 
     def _add_completed_order(self, player_id_buy, player_id_sell, amount):
-        self.completed_orders = jnp.roll(self.completed_orders, -1, axis=0)
-        self.completed_orders = self.completed_orders.at[-1].set(jnp.array([player_id_buy, player_id_sell, amount]))
+        self.completed_orders = np.roll(self.completed_orders, -1, axis=0)
+        self.completed_orders[-1] = np.array([player_id_buy, player_id_sell, amount])
 
     def _calculate_final_rewards(self):
         rewards = [0] * self.num_players
