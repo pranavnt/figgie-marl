@@ -52,7 +52,8 @@ class Agent(nn.Module):
         action_type = jax.random.categorical(action_type_key, jnp.log(action_type_probs))
         suit = jax.random.categorical(suit_key, jnp.log(suit_probs))
         amount = jax.random.normal(amount_key) * amount_sigma + amount_mu
-        amount = jnp.clip(amount, 0, 350).astype(jnp.int32)
+        player_balance = obs[1 + self.num_suits]  # Get the player's balance from the observation
+        amount = jnp.clip(amount, 0, player_balance).astype(jnp.int32)
 
         return jnp.array([action_type, suit, amount[0]])
 

@@ -87,7 +87,6 @@ class FiggieEnv(gym.Env):
             player = i % self.num_players
             suit_index = self.suits.index(suit)
             self.player_cards[player][suit_index] += 1
-
     def step(self, actions: Tuple[Tuple[int, int, int], ...]) -> Tuple[jnp.ndarray, List[int], bool, Dict]:
         for player_id, action in enumerate(actions):
             action_type, suit_index, amount = action
@@ -99,7 +98,7 @@ class FiggieEnv(gym.Env):
                     self._add_completed_order(player_id, seller_id, amount)
                     self.offers[suit_index] = 0
             elif action_type == 1:  # bid
-                self.bids[suit_index] = max(self.bids[suit_index], amount)
+                self.bids[suit_index] = max(self.bids[suit_index], min(amount, self.player_chips[player_id]))
             elif action_type == 2:  # offer
                 if self.player_cards[player_id][suit_index] > 0:
                     self.offers[suit_index] = min(self.offers[suit_index], amount)
