@@ -87,6 +87,7 @@ class FiggieEnv(gym.Env):
             player = i % self.num_players
             suit_index = self.suits.index(suit)
             self.player_cards[player][suit_index] += 1
+
     def step(self, actions: Tuple[Tuple[int, int, int], ...]) -> Tuple[jnp.ndarray, List[int], bool, Dict]:
         for player_id, action in enumerate(actions):
             action_type, suit_index, amount = action
