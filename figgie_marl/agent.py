@@ -10,24 +10,20 @@ class Agent(nn.Module):
 
     @nn.compact
     def __call__(self, obs):
-        # Predict opponent card distribution
         opponent_card_dist = nn.Dense(self.hidden_dim)(obs)
         opponent_card_dist = nn.relu(opponent_card_dist)
         opponent_card_dist = nn.Dense(self.num_suits * (self.num_players - 1))(opponent_card_dist)
         opponent_card_dist = nn.softmax(opponent_card_dist, axis=-1)
         opponent_card_dist = jnp.reshape(opponent_card_dist, (self.num_players - 1, self.num_suits))
 
-        # Predict opponent actions
         opponent_actions = nn.Dense(self.hidden_dim)(obs)
         opponent_actions = nn.relu(opponent_actions)
         opponent_actions = nn.Dense(4 * (self.num_players - 1))(opponent_actions)
         opponent_actions = nn.softmax(opponent_actions, axis=-1)
         opponent_actions = jnp.reshape(opponent_actions, (self.num_players - 1, 4))
 
-        # Concatenate features for the final policy network
         features = jnp.concatenate([obs, jnp.ravel(opponent_card_dist), jnp.ravel(opponent_actions)])
 
-        # Policy network
         actor = nn.Dense(self.hidden_dim)(features)
         actor = nn.relu(actor)
         actor = nn.Dense(self.hidden_dim)(actor)
@@ -41,7 +37,6 @@ class Agent(nn.Module):
         amount_mu = nn.Dense(1)(actor)
         amount_sigma = nn.softplus(nn.Dense(1)(actor)) + 1e-6
 
-        # Value network
         critic = nn.Dense(self.hidden_dim)(features)
         critic = nn.relu(critic)
         critic = nn.Dense(self.hidden_dim)(critic)
@@ -97,7 +92,6 @@ if __name__ == "__main__":
         obs, rewards, done, info = env.step(actions)
 
         env.render()
-        # print(f"Rewards: {rewards}")
         print(round_num)
         round_num += 1
 
