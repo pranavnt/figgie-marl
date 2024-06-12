@@ -23,6 +23,8 @@ class FiggieEnv(gym.Env):
             gym.spaces.Box(low=0, high=350, shape=(1,), dtype=np.int32)  # amount
         ])
 
+        self.player_chips = np.full((self.num_players,), 350, dtype=np.int32)
+
         self.obs_size = 1 + self.num_suits + 1 + (self.num_players - 1) * self.num_suits + self.num_suits * 2 + 20 * 3
         self.observation_space = gym.spaces.Box(low=0, high=350, shape=(self.num_players, self.obs_size), dtype=np.int32)
 
@@ -56,7 +58,8 @@ class FiggieEnv(gym.Env):
 
     def reset(self) -> jnp.ndarray:
         self.player_cards = np.zeros((self.num_players, self.num_suits), dtype=np.int32)
-        self.player_chips = np.full((self.num_players,), 300, dtype=np.int32)  # $350 - $50 ante
+        # reduce each by 50
+        self.player_chips = self.player_chips - 50
         self.bids = np.zeros(self.num_suits, dtype=np.int32)
         self.offers = np.zeros(self.num_suits, dtype=np.int32)
         self.completed_orders = np.zeros((20, 3), dtype=np.int32)
