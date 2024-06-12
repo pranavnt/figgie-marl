@@ -60,7 +60,7 @@ class Agent(nn.Module):
         return action_type_logits, suit_logits, amount_mu, amount_sigma, value
 
     def act(self, params, obs, rng_key):
-        action_type_logits, suit_logits, amount_mu, amount_sigma, _ = self.apply(params, obs)
+        action_type_logits, suit_logits, amount_mu, amount_sigma, value = self.apply(params, obs)
 
         action_type_key, suit_key, amount_key = jax.random.split(rng_key, 3)
         action_type = jax.random.categorical(action_type_key, action_type_logits)
@@ -69,7 +69,7 @@ class Agent(nn.Module):
         player_balance = obs[1 + self.num_suits]
         amount = jnp.clip(amount, 0, player_balance).astype(jnp.int32)
 
-        return jnp.array([action_type, suit, amount[0]])
+        return jnp.array([action_type, suit, amount[0]]), value
 
 
 if __name__ == "__main__":
