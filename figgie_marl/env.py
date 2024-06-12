@@ -16,14 +16,14 @@ class FiggieEnv(gym.Env):
         self.common_suit = None
         self.goal_suit = None
         self.goal_suit_cards = None
+        self.ante = 50
+        self.pot = self.num_players * self.ante
 
         self.action_space = gym.spaces.Tuple([
             gym.spaces.Discrete(4),  # buy, bid, offer, pass
             gym.spaces.Discrete(4),  # suit index
             gym.spaces.Box(low=0, high=350, shape=(1,), dtype=np.int32)  # amount
         ])
-
-        self.player_chips = np.full((self.num_players,), 350, dtype=np.int32)
 
         self.obs_size = 1 + self.num_suits + 1 + (self.num_players - 1) * self.num_suits + self.num_suits * 2 + 20 * 3
         self.observation_space = gym.spaces.Box(low=0, high=350, shape=(self.num_players, self.obs_size), dtype=np.int32)
@@ -58,8 +58,10 @@ class FiggieEnv(gym.Env):
 
     def reset(self) -> jnp.ndarray:
         self.player_cards = np.zeros((self.num_players, self.num_suits), dtype=np.int32)
-        # reduce each by 50
-        self.player_chips = self.player_chips - 50
+        if not hasattr(self, 'player_chips'):
+            self.player_chips = np.full((self.num_players,), 300, dtype=np.int32)
+        else:
+            self.player_chips -= self.ante
         self.bids = np.zeros(self.num_suits, dtype=np.int32)
         self.offers = np.zeros(self.num_suits, dtype=np.int32)
         self.completed_orders = np.zeros((20, 3), dtype=np.int32)
@@ -94,18 +96,22 @@ class FiggieEnv(gym.Env):
     def step(self, actions: Tuple[Tuple[int, int, int], ...]) -> Tuple[jnp.ndarray, List[int], bool, Dict]:
         for player_id, action in enumerate(actions):
             action_type, suit_index, amount = action
-            if action_type == 0:
-                if self.offers[suit_index] <= amount and amount <= self.player_chips[player_id]:
-                    self.player_cards[player_id][suit_index] += 1
-                    self.player_chips[player_id] -= amount
+            if action_type == 0:  # buy
+                if self.offers[suit_index] > 0 and amount >= self.offers[suit_index] and self.player_chips[player_id] >= amount:
                     seller_id = np.where(self.offers == self.offers[suit_index])[0][0]
-                    self._add_completed_order(player_id, seller_id, amount)
-                    self.offers[suit_index] = 0
-            elif action_type == 1:
-                self.bids[suit_index] = max(self.bids[suit_index], min(amount, self.player_chips[player_id]))
+                    if self.player_cards[seller_id][suit_index] > 0:
+                        self.player_cards[player_id][suit_index] += 1
+                        self.player_chips[player_id] -= amount
+                        self.player_cards[seller_id][suit_index] -= 1
+                        self.player_chips[seller_id] += amount
+                        self._add_completed_order(player_id, seller_id, amount)
+                        self.offers[suit_index] = 0
+            elif action_type == 1:  # bid
+                if amount > self.bids[suit_index] and self.player_chips[player_id] >= amount:
+                    self.bids[suit_index] = amount
             elif action_type == 2:  # offer
-                if self.player_cards[player_id][suit_index] > 0:
-                    self.offers[suit_index] = min(self.offers[suit_index], amount)
+                if self.player_cards[player_id][suit_index] > 0 and (self.offers[suit_index] == 0 or amount < self.offers[suit_index]):
+                    self.offers[suit_index] = amount
 
         self._process_completed_orders()
 
@@ -133,16 +139,19 @@ class FiggieEnv(gym.Env):
             bid_player = np.where(self.bids == self.bids[suit_index])[0][0]
             offer_player = np.where(self.offers == self.offers[suit_index])[0][0]
 
-            self.player_cards[bid_player][suit_index] += 1
-            self.player_cards[offer_player][suit_index] -= 1
+            trade_amount = min(self.bids[suit_index], self.offers[suit_index])
 
-            self.player_chips[bid_player] -= self.bids[suit_index]
-            self.player_chips[offer_player] += self.bids[suit_index]
+            if self.player_chips[bid_player] >= trade_amount and self.player_cards[offer_player][suit_index] > 0:
+                self.player_cards[bid_player][suit_index] += 1
+                self.player_cards[offer_player][suit_index] -= 1
 
-            self._add_completed_order(bid_player, offer_player, self.bids[suit_index])
+                self.player_chips[bid_player] -= trade_amount
+                self.player_chips[offer_player] += trade_amount
 
-            self.bids[suit_index] = 0
-            self.offers[suit_index] = 0
+                self._add_completed_order(bid_player, offer_player, trade_amount)
+
+                self.bids[suit_index] = 0
+                self.offers[suit_index] = 0
 
     def _add_completed_order(self, player_id_buy, player_id_sell, amount):
         self.completed_orders = np.roll(self.completed_orders, -1, axis=0)
@@ -152,16 +161,13 @@ class FiggieEnv(gym.Env):
         rewards = [0] * self.num_players
         goal_suit_index = self.suits.index(self.goal_suit)
 
+        total_goal_suit_cards = np.sum(self.player_cards[:, goal_suit_index])
+
         for player_id in range(self.num_players):
-            rewards[player_id] = self.player_cards[player_id][goal_suit_index] * 10
+            num_goal_suit_cards = self.player_cards[player_id][goal_suit_index]
+            self.player_chips[player_id] += 200 * num_goal_suit_cards / total_goal_suit_cards
 
-        max_goal_suit_cards = np.max(self.player_cards[:, goal_suit_index])
-        winners = np.where(self.player_cards[:, goal_suit_index] == max_goal_suit_cards)[0]
-        pot_bonus = (200 - self.goal_suit_cards * 10) // len(winners)
-        for winner in winners:
-            rewards[winner] += pot_bonus
-
-        return rewards
+        return self.player_chips.tolist()
 
     def render(self, mode='human'):
         if mode == 'human':

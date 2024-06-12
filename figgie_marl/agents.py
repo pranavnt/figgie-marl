@@ -177,6 +177,4 @@ if __name__ == "__main__":
             if round_num >= num_rounds:
                 done = True
 
-        print(f"Game {game_id+1} - Final rewards: {rewards}")
-        print(f"Game {game_id+1} - Final balances: {env.player_chips}")
-        # print balances
+        print(f"Game {game_id+1} - Final balances: {rewards}")

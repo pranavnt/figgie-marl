@@ -110,4 +110,4 @@ if __name__ == "__main__":
         round_num += 1
 
     print("Game over!")
-    print(f"Final rewards: {rewards}")
+    print(f"Final balances: {rewards}")
