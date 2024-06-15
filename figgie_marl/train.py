@@ -87,7 +87,7 @@ for epoch in range(config["num_epochs"]):
     }
 
     while not done:
-        rng_key, _rng = jax.random.split(rng_key)
+        rng_key, _ = jax.random.split(rng_key)
 
         actions = []
         values = []
