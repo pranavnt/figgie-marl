@@ -63,7 +63,7 @@ def loss_fn(params):
 def train_step(train_state_policy, train_state_card_pred, params):
     (loss, (policy_loss, value_loss, entropy_bonus, card_pred_loss)), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
 
-    policy_grads, card_pred_grads = jax.tree_map(lambda x: x[0], grads), jax.tree_map(lambda x: x[1], grads)
+    policy_grads, card_pred_grads = jax.tree.map(lambda x: x[0], grads), jax.tree.map(lambda x: x[1], grads)
 
     train_state_policy = train_state_policy.apply_gradients(grads=policy_grads)
     train_state_card_pred = train_state_card_pred.apply_gradients(grads=card_pred_grads)
@@ -73,7 +73,7 @@ def train_step(train_state_policy, train_state_card_pred, params):
 train_step = jax.jit(train_step)
 
 for epoch in range(config["num_epochs"]):
-    obs = env.reset()
+    obs, true_opponent_card_dists = env.reset()
     done = False
 
     replay_buffer = {
@@ -92,10 +92,11 @@ for epoch in range(config["num_epochs"]):
         actions = []
         values = []
         log_probs = []
+        opponent_card_dists = []
 
         for i in range(config["num_players"]):
             player_obs = obs[i]
-            (action_type, suit, amount), value = agent.act(train_state.params, player_obs, _rng)
+            (action_type, suit, amount), value, opponent_card_dist = agent.act(train_state.params, player_obs, rng_key)
             action = jnp.array([action_type, suit, amount])
             actions.append(action)
             values.append(value)
@@ -115,7 +116,7 @@ for epoch in range(config["num_epochs"]):
         values = jnp.stack(values, axis=0)
         log_probs = jnp.stack(log_probs, axis=0)
 
-        next_obs, rewards, done, _ = env.step(tuple(actions))
+        (next_obs, next_true_card_dist), rewards, done, _ = env.step(tuple(actions))
 
         replay_buffer["observations"].append(obs)
         replay_buffer["actions"].append(actions)
@@ -132,6 +133,7 @@ for epoch in range(config["num_epochs"]):
         replay_buffer["opponent_cards"].append(jnp.stack(opponent_cards, axis=0))
 
         obs = next_obs
+        true_opponent_card_dists = next_true_card_dist
 
     train_state, train_state_card_pred, loss, (policy_loss, value_loss, entropy_bonus, card_pred_loss) = train_step(train_state, train_state_card_pred, train_state.params)
 
